@@ -8,6 +8,8 @@ from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 model = ChatOpenAI(model="gpt-4.1-nano", temperature=0) 
 
+# Debugging: InputState & OutputState are introduced to help with receiving user input to `messages`.
+#   Without these, the user input is delivered to `summary` key. It seems to be a bug in LangGraph Studio.
 # Input schema - only what LangGraph Studio should show as input
 class InputState(TypedDict):
     messages: list[BaseMessage]
