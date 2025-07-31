@@ -1,5 +1,6 @@
 from typing import Literal
-from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage
+from typing_extensions import TypedDict
+from langchain_core.messages import HumanMessage, SystemMessage, RemoveMessage, BaseMessage
 from langgraph.graph import MessagesState
 from langgraph.graph import StateGraph, START, END
 
@@ -7,34 +8,35 @@ from langgraph.graph import StateGraph, START, END
 from langchain_openai import ChatOpenAI
 model = ChatOpenAI(model="gpt-4.1-nano", temperature=0) 
 
-# State class - only uses MessagesState, summary stored in system messages
-# Debug: summary key in State is not working as expected. User input is delivered to summary key.
-class State(MessagesState):
-    pass
-    
-# Helper function to get summary from messages
-def get_summary_from_messages(messages):
-    """Extract summary from first SystemMessage if it exists"""
-    if messages and isinstance(messages[0], SystemMessage):
-        content = messages[0].content
-        if content.startswith("Summary of conversation earlier:"):
-            return content.replace("Summary of conversation earlier: ", "")
-    return ""
+# Input schema - only what LangGraph Studio should show as input
+class InputState(TypedDict):
+    messages: list[BaseMessage]
 
-# Helper function to remove summary message
-def remove_summary_message(messages):
-    """Remove summary SystemMessage if it exists"""
-    if messages and isinstance(messages[0], SystemMessage):
-        content = messages[0].content
-        if content.startswith("Summary of conversation earlier:"):
-            return messages[1:]  # Return messages without summary
-    return messages
+# Full state schema - includes summary for internal use
+class State(MessagesState):
+    summary: str = ""
+
+# Output schema - what gets returned
+class OutputState(TypedDict):
+    messages: list[BaseMessage]
 
 # Define the logic to call the model
 def call_model(state: State):
     
-    # Use messages as-is (summary already embedded if exists)
-    messages = state["messages"]
+    # Get summary if it exists
+    summary = state.get("summary", "")
+
+    # If there is summary, then we add it to messages
+    if summary:
+        
+        # Add summary to system message
+        system_message = f"Summary of conversation earlier: {summary}"
+
+        # Append summary to any newer messages
+        messages = [SystemMessage(content=system_message)] + state["messages"]
+    
+    else:
+        messages = state["messages"]
     
     response = model.invoke(messages)
     return {"messages": response}
@@ -46,11 +48,8 @@ def should_continue(state: State) -> Literal["summarize_conversation", "__end__"
     
     messages = state["messages"]
     
-    # Remove summary message from count
-    actual_messages = remove_summary_message(messages)
-    
-    # If there are more than six actual conversation messages, then we summarize
-    if len(actual_messages) > 6:
+    # If there are more than six messages, then we summarize the conversation
+    if len(messages) > 4:
         print("========================summarizing======================")
         return "summarize_conversation"
     
@@ -59,42 +58,31 @@ def should_continue(state: State) -> Literal["summarize_conversation", "__end__"
 
 def summarize_conversation(state: State):
     
-    messages = state["messages"]
-    
-    # Get existing summary if it exists
-    existing_summary = get_summary_from_messages(messages)
-    
-    # Remove summary message to get actual conversation
-    actual_messages = remove_summary_message(messages)
-    
+    # First, we get any existing summary
+    summary = state.get("summary", "")
+
     # Create our summarization prompt 
-    if existing_summary:
-        # If a summary already exists, extend it
+    if summary:
+        
+        # A summary already exists
         summary_message = (
-            f"This is summary of the conversation to date: {existing_summary}\n\n"
+            f"This is summary of the conversation to date: {summary}\n\n"
             "Extend the summary by taking into account the new messages above:"
         )
+        
     else:
-        # If no summary exists, just create a new one
         summary_message = "Create a summary of the conversation above:"
 
-    # Add prompt to our conversation messages
-    messages_for_summary = actual_messages + [HumanMessage(content=summary_message)]
-    response = model.invoke(messages_for_summary)
+    # Add prompt to our history
+    messages = state["messages"] + [HumanMessage(content=summary_message)]
+    response = model.invoke(messages)
     
-    # Keep only the 2 most recent actual messages
-    recent_messages = actual_messages[-2:]
-    
-    # Create new summary system message
-    new_summary_message = SystemMessage(content=f"Summary of conversation earlier: {response.content}")
-    
-    # Return new message list: summary + recent messages
-    new_messages = [new_summary_message] + recent_messages
-    
-    return {"messages": new_messages}
+    # Delete all but the 2 most recent messages
+    delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][:-2]]
+    return {"summary": response.content, "messages": delete_messages}
 
-# Define a new graph
-workflow = StateGraph(State)
+# Define a new graph with input schema
+workflow = StateGraph(State, input_schema=InputState, output_schema=OutputState)
 workflow.add_node("conversation", call_model)
 workflow.add_node(summarize_conversation)
 
