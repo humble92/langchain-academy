@@ -225,3 +225,8 @@ module-6/deployment/docker-compose.yml
 
 # Working temp files
 **/.langgraph_api/
+
+# test db
+**/state_db/
+**/state_db2/
+.devdbrc
